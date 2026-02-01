@@ -23,3 +23,11 @@ npm run preview
 - Stepper cliccabile sugli step già completati.
 - Anteprima: render del **testo template invariato** con sostituzione segnaposto; uso di `<pre>` con `whitespace-pre-wrap`.
 - Generazione documento: download JSON.
+
+
+## v2.1 FIX
+- Fix pagina bianca (runtime crash).
+- Download Word (.docx) dal template reale in /public/template.docx.
+- Importi arrotondati.
+- Giudici dropdown.
+- Motivazioni auto positivo/negativo.
