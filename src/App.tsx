@@ -1,4 +1,5 @@
 import React, { memo, useCallback, useMemo, useReducer, useRef, useState } from 'react'
+import JSZip from 'jszip'
 
 type TipoDifensore = 'fiducia' | 'ufficio'
 type TipoAssistito = 'imputato' | 'parte_civile' | 'persona_offesa'
@@ -8,6 +9,40 @@ type FasiPrincipale = { studio: boolean; introduttiva: boolean; istruttoria: boo
 type FasiCautelare = { studio: boolean; introduttuttiva?: never; introduttiva: boolean; decisionale: boolean }
 
 type AssistitoExtra = { cognome: string; nome: string; luogoNascita: string; dataNascita: string }
+
+const GIUDICI = [
+  'Dott.ssa Stefania De Angelis',
+  'Dott. Ambrogio Colombo',
+  'Dott. Leonardo Convertini',
+  'Dott.ssa Anna Guidone',
+  'Dott. Simone Falerno',
+  "Dott.ssa Paola D'Amico",
+  'Dott.ssa Margherita Ricci',
+  'Dott. Antonio Amato (G.O.T.)',
+  'Dott. Roberto De Matteis (G.O.T.)',
+  'Dott. Giuseppe Caputo (G.O.T.)',
+  'Dott. Giuseppe Lanzillotta (G.O.T.)',
+  'Dott.ssa Monica Pizza (G.O.T.)',
+  'Dott.ssa Maria Raffaella Lopane (G.O.T.)',
+] as const
+
+const POS = {
+  studio: "Si ritiene congruo comminare la fase di studio essendo stata documentata tale attività necessaria e propedeutica all'espletamento dell'incarico difensivo",
+  introduttiva: "Si ritiene opportuno riconoscere tale fase perché il difensore ha dimostrato di aver avanzato istanze rilevanti ai fini della suddetta fase",
+  istruttoria: "Si ritiene congruo liquidare la fase istruttoria dal momento che l'istante ha dimostrato di aver svolto e partecipato alle attività tipiche della fase istruttoria, quali la formulazione di richieste di prova in sede di apertura del dibattimento e la conseguente acquisizione di prove documentali e testimoniali.",
+  decisionale: "Si ritiene congruo liquidare tale fase dal momento che risulta provato che il difensore ha partecipato alla formulazione delle conclusioni e all'esito del giudizio",
+} as const
+
+const NEG = {
+  studio: "Non si ritiene congruo comminare la fase di studio non risultando documentata attività necessaria e propedeutica all'espletamento dell'incarico difensivo",
+  introduttiva: "Non si ritiene opportuno riconoscere tale fase non risultando che il difensore abbia avanzato istanze rilevanti ai fini della suddetta fase",
+  istruttoria: "Non si ritiene congruo liquidare la fase istruttoria non risultando dimostrato lo svolgimento o la partecipazione alle attività tipiche della fase istruttoria, quali la formulazione di richieste di prova in sede di apertura del dibattimento e la conseguente acquisizione di prove documentali e testimoniali.",
+  decisionale: "Non si ritiene congruo liquidare tale fase non risultando provato che il difensore abbia partecipato alla formulazione delle conclusioni e all'esito del giudizio",
+} as const
+
+function isAutoMotivazione(current: string, fase: keyof typeof POS): boolean {
+  return current === POS[fase] || current === NEG[fase] || current.trim() === ''
+}
 
 export type AppState = {
   rgt: string; rgnr: string; siamm: string;
@@ -59,10 +94,10 @@ const initialState: AppState = {
   assistitiMultipli: [],
   motivazioneAssistiti: '',
 
-  motivazioneStudio: '',
-  motivazioneIntroduttiva: '',
-  motivazioneIstruttoria: '',
-  motivazioneDecisionale: '',
+  motivazioneStudio: POS.studio,
+  motivazioneIntroduttiva: NEG.introduttiva,
+  motivazioneIstruttoria: NEG.istruttoria,
+  motivazioneDecisionale: POS.decisionale,
 }
 
 type Action =
@@ -96,12 +131,48 @@ function reducer(state: AppState, action: Action): AppState {
 }
 
 function euro(n: number): string {
-  const fixed = (Math.round(n * 100) / 100).toFixed(2)
-  // IT format: 1.234,56
-  const [intp, dec] = fixed.split('.')
-  const intIt = intp.replace(/\B(?=(\d{3})+(?!\d))/g, '.')
-  return `${intIt},${dec}`
+  const rounded = Math.round(n)
+  const intIt = String(rounded).replace(/\\B(?=(\\d{3})+(?!\\d))/g, '.')
+  return intIt
 }
+
+
+function xmlEscape(s: string): string {
+  return (s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;')
+}
+
+async function downloadDocxFromTemplate(replacements: Record<string, string>, filename: string) {
+  const res = await fetch('/template.docx')
+  if (!res.ok) throw new Error('Impossibile leggere il template Word (template.docx).')
+  const buf = await res.arrayBuffer()
+  const zip = await JSZip.loadAsync(buf)
+
+  const docXmlPath = 'word/document.xml'
+  const docXmlFile = zip.file(docXmlPath)
+  if (!docXmlFile) throw new Error('Template non valido: manca word/document.xml.')
+
+  let xml = await docXmlFile.async('string')
+  for (const [k, v] of Object.entries(replacements)) {
+    xml = xml.split(k).join(xmlEscape(v))
+  }
+  zip.file(docXmlPath, xml)
+
+  const out = await zip.generateAsync({ type: 'blob' })
+  const url = URL.createObjectURL(out)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
 
 const DM55_A: Record<Complessita, { studio: number; introduttiva: number; istruttoria: number; decisionale: number }> = {
   semplice: { studio: 237, introduttiva: 284, istruttoria: 567, decisionale: 709 },
@@ -482,19 +553,37 @@ export default function App() {
     setStep((s) => Math.max(0, s - 1))
   }, [])
 
-  const downloadJson = useCallback(() => {
-    const payload = buildJsonOutput(state)
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
+  const downloadWord = useCallback(async () => {
+    const assistitoFull = [state.assistitoCognome, state.assistitoNome].filter(Boolean).join(' ').trim()
+    const dataSentenza = state.dataSentenza || state.dataUdienza || ''
+    const repl: Record<string,string> = {
+      '{{RGT}}': state.rgt,
+      '{{RGNR}}': state.rgnr,
+      '{{SIAMM}}': state.siamm,
+      '{{Giudice}}': state.giudice,
+      '{{giudice}}': state.giudice,
+      '{{avvocato}}': state.avvocato,
+      '{{assistito}}': assistitoFull,
+      '{{data sentenza}}': dataSentenza,
+      '{{motivazione studio}}': state.motivazioneStudio,
+      '{{motivazione introduttiva}}': state.motivazioneIntroduttiva,
+      '{{motivazione istruttoria}}': state.motivazioneIstruttoria,
+      '{{motivazione decisionale}}': state.motivazioneDecisionale,
+      '{{assistenza più assistiti}}': state.motivazioneAssistiti,
+      '{{subcautelare}}': state.motivazioneCautelare,
+      '{{importo studio}}': euro(principale.studio),
+      '{{importo introduttiva}}': euro(principale.introduttiva),
+      '{{importo istruttoria}}': euro(principale.istruttoria),
+      '{{importo decisionale}}': euro(principale.decisionale),
+      '{{importo tot parziale}}': euro(principale.totaleParziale),
+      '{{rid 1/3}}': euro(principale.riduzione),
+      '{{importo tot ridotto}}': euro(principale.totaleRidotto),
+      '{{rimborso}}': euro(principale.rimborso15),
+      '{{totale calcoli}}': euro(principale.totaleCalcoli),
+    }
     const date = new Date().toISOString().slice(0, 10)
-    a.href = url
-    a.download = `liquidazione-gratuito-patrocinio-brindisi-${date}.json`
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-    URL.revokeObjectURL(url)
-  }, [state])
+    await downloadDocxFromTemplate(repl, `decreto-liquidazione-${date}.docx`)
+  }, [state, principale])
 
   const header = (
     <div className="rounded-2xl border border-slate-200 bg-white shadow-sm px-6 py-5">
@@ -588,7 +677,19 @@ const Step1 = memo(function Step1({ state, dispatch }: { state: AppState; dispat
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <InputField label="Ammissione G.P. · N. Mod. 27" value={state.numeroMod27} onChange={(v) => dispatch({ type: 'set', key: 'numeroMod27', value: v })} placeholder="es. 27/2025" />
             <InputField label="Ammissione G.P. · Data decreto ammissione" value={state.dataMod27} onChange={(v) => dispatch({ type: 'set', key: 'dataMod27', value: v })} placeholder="gg/mm/aaaa" />
-            <InputField label="Giudice (titolo + nome completo)" value={state.giudice} onChange={(v) => dispatch({ type: 'set', key: 'giudice', value: v })} placeholder="es. dott. Mario Rossi" />
+            <label className="block">
+                <div className="text-sm font-medium text-slate-700 mb-1">Giudice</div>
+                <select
+                  value={state.giudice}
+                  onChange={(e) => dispatch({ type: 'set', key: 'giudice', value: e.target.value })}
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-cyan-300"
+                >
+                  <option value="">— seleziona —</option>
+                  {GIUDICI.map((g) => (
+                    <option key={g} value={g}>{g}</option>
+                  ))}
+                </select>
+              </label>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -956,12 +1057,12 @@ const Step5 = memo(function Step5({
               onClick={onDownload}
               className="rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white shadow-sm hover:bg-slate-800"
             >
-              Genera documento (JSON)
+              Scarica decreto (Word)
             </button>
           </div>
 
           <div className="text-xs text-slate-500">
-            Il file scaricato contiene tutti i campi secondo la struttura JSON richiesta.
+            Il file Word viene generato dal template originale mantenendo la formattazione; i valori vengono inseriti nei segnaposto.
           </div>
         </div>
       </Card>
